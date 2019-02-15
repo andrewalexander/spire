@@ -2,11 +2,15 @@ package k8s
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -153,7 +157,9 @@ func (p *k8sPlugin) Attest(ctx context.Context, req *workloadattestor.AttestRequ
 }
 
 func (p *k8sPlugin) getPodListFromInsecureKubeletPort() (out *podList, err error) {
-	httpResp, err := p.httpClient.Get(fmt.Sprintf("http://localhost:%d/pods", p.kubeletReadOnlyPort))
+	//httpResp, err := p.httpClient.Get(fmt.Sprintf("http://localhost:%d/pods", p.kubeletReadOnlyPort))
+	host, _ := os.Hostname()
+	httpResp, err := p.httpClient.Get(fmt.Sprintf("https://%s:%d/pods", host, 10250))
 	if err != nil {
 		return nil, err
 	}
@@ -264,9 +270,32 @@ func (*k8sPlugin) GetPluginInfo(context.Context, *spi.GetPluginInfoRequest) (*sp
 }
 
 func New() *k8sPlugin {
+	cert, err := tls.LoadX509KeyPair("/etc/kubernetes/pki/apiserver-kubelet-client.crt", "/etc/kubernetes/pki/apiserver-kubelet-client.key")
+	// TODO: proper error handling - don't commit this
+	if err != nil {
+		log.Fatal(err)
+	}
+	rootCAs, err := x509.SystemCertPool()
+	if err != nil {
+		log.Fatal(err)
+	}
+	kubeletCA, err := ioutil.ReadFile("/var/lib/kubelet/pki/kubelet.crt")
+	if err != nil {
+		log.Fatal(err)
+	}
+	if ok := rootCAs.AppendCertsFromPEM(kubeletCA); !ok {
+		log.Fatal(err)
+	}
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			RootCAs:      rootCAs,
+		},
+	}
 	return &k8sPlugin{
-		mtx:        &sync.RWMutex{},
-		httpClient: &http.Client{},
+		mtx: &sync.RWMutex{},
+		//httpClient: &http.Client{},
+		httpClient: &http.Client{Transport: tr},
 		fs:         cgroups.OSFileSystem{},
 	}
 }
